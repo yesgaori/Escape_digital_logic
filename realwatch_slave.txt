@@ -1,0 +1,517 @@
+`timescale 1 ns / 1 ps
+
+	module myip_foriptime_slave_lite_v1_0_S00_AXI #
+	(
+		// Users to add parameters here
+
+		// User parameters ends
+		// Do not modify the parameters beyond this line
+
+		// Width of S_AXI data bus
+		parameter integer C_S_AXI_DATA_WIDTH	= 32,
+		// Width of S_AXI address bus
+		parameter integer C_S_AXI_ADDR_WIDTH	= 5
+	)
+	(
+		// Users to add ports here
+
+		// User ports ends
+		// Do not modify the ports beyond this line
+
+		// Global Clock Signal
+		input wire  S_AXI_ACLK,
+		// Global Reset Signal. This Signal is Active LOW
+		input wire  S_AXI_ARESETN,
+		// Write address (issued by master, acceped by Slave)
+		input wire [C_S_AXI_ADDR_WIDTH-1 : 0] S_AXI_AWADDR,
+		// Write channel Protection type. This signal indicates the
+    		// privilege and security level of the transaction, and whether
+    		// the transaction is a data access or an instruction access.
+		input wire [2 : 0] S_AXI_AWPROT,
+		// Write address valid. This signal indicates that the master signaling
+    		// valid write address and control information.
+		input wire  S_AXI_AWVALID,
+		// Write address ready. This signal indicates that the slave is ready
+    		// to accept an address and associated control signals.
+		output wire  S_AXI_AWREADY,
+		// Write data (issued by master, acceped by Slave) 
+		input wire [C_S_AXI_DATA_WIDTH-1 : 0] S_AXI_WDATA,
+		// Write strobes. This signal indicates which byte lanes hold
+    		// valid data. There is one write strobe bit for each eight
+    		// bits of the write data bus.    
+		input wire [(C_S_AXI_DATA_WIDTH/8)-1 : 0] S_AXI_WSTRB,
+		// Write valid. This signal indicates that valid write
+    		// data and strobes are available.
+		input wire  S_AXI_WVALID,
+		// Write ready. This signal indicates that the slave
+    		// can accept the write data.
+		output wire  S_AXI_WREADY,
+		// Write response. This signal indicates the status
+    		// of the write transaction.
+		output wire [1 : 0] S_AXI_BRESP,
+		// Write response valid. This signal indicates that the channel
+    		// is signaling a valid write response.
+		output wire  S_AXI_BVALID,
+		// Response ready. This signal indicates that the master
+    		// can accept a write response.
+		input wire  S_AXI_BREADY,
+		// Read address (issued by master, acceped by Slave)
+		input wire [C_S_AXI_ADDR_WIDTH-1 : 0] S_AXI_ARADDR,
+		// Protection type. This signal indicates the privilege
+    		// and security level of the transaction, and whether the
+    		// transaction is a data access or an instruction access.
+		input wire [2 : 0] S_AXI_ARPROT,
+		// Read address valid. This signal indicates that the channel
+    		// is signaling valid read address and control information.
+		input wire  S_AXI_ARVALID,
+		// Read address ready. This signal indicates that the slave is
+    		// ready to accept an address and associated control signals.
+		output wire  S_AXI_ARREADY,
+		// Read data (issued by slave)
+		output wire [C_S_AXI_DATA_WIDTH-1 : 0] S_AXI_RDATA,
+		// Read response. This signal indicates the status of the
+    		// read transfer.
+		output wire [1 : 0] S_AXI_RRESP,
+		// Read valid. This signal indicates that the channel is
+    		// signaling the required read data.
+		output wire  S_AXI_RVALID,
+		// Read ready. This signal indicates that the master can
+    		// accept the read data and response information.
+		input wire  S_AXI_RREADY
+	);
+
+	// AXI4LITE signals
+	reg [C_S_AXI_ADDR_WIDTH-1 : 0] 	axi_awaddr;
+	reg  	axi_awready;
+	reg  	axi_wready;
+	reg [1 : 0] 	axi_bresp;
+	reg  	axi_bvalid;
+	reg [C_S_AXI_ADDR_WIDTH-1 : 0] 	axi_araddr;
+	reg  	axi_arready;
+	reg [1 : 0] 	axi_rresp;
+	reg  	axi_rvalid;
+
+	// Example-specific design signals
+	// local parameter for addressing 32 bit / 64 bit C_S_AXI_DATA_WIDTH
+	// ADDR_LSB is used for addressing 32/64 bit registers/memories
+	// ADDR_LSB = 2 for 32 bits (n downto 2)
+	// ADDR_LSB = 3 for 64 bits (n downto 3)
+	localparam integer ADDR_LSB = (C_S_AXI_DATA_WIDTH/32) + 1;
+	localparam integer OPT_MEM_ADDR_BITS = 2;
+	//----------------------------------------------
+	//-- Signals for user logic register space example
+	//------------------------------------------------
+	//-- Number of Slave Registers 8
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg0;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg1;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg2;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg3;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg4;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg5;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg6;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg7;
+	integer	 byte_index;
+
+	// I/O Connections assignments
+
+	assign S_AXI_AWREADY	= axi_awready;
+	assign S_AXI_WREADY	= axi_wready;
+	assign S_AXI_BRESP	= axi_bresp;
+	assign S_AXI_BVALID	= axi_bvalid;
+	assign S_AXI_ARREADY	= axi_arready;
+	assign S_AXI_RRESP	= axi_rresp;
+	assign S_AXI_RVALID	= axi_rvalid;
+	 //state machine varibles 
+	 reg [1:0] state_write;
+	 reg [1:0] state_read;
+	 //State machine local parameters
+	 localparam Idle = 2'b00,Raddr = 2'b10,Rdata = 2'b11 ,Waddr = 2'b10,Wdata = 2'b11;
+	// Implement Write state machine
+	// Outstanding write transactions are not supported by the slave i.e., master should assert bready to receive response on or before it starts sending the new transaction
+	always @(posedge S_AXI_ACLK)                                 
+	  begin                                 
+	     if (S_AXI_ARESETN == 1'b0)                                 
+	       begin                                 
+	         axi_awready <= 0;                                 
+	         axi_wready <= 0;                                 
+	         axi_bvalid <= 0;                                 
+	         axi_bresp <= 0;                                 
+	         axi_awaddr <= 0;                                 
+	         state_write <= Idle;                                 
+	       end                                 
+	     else                                  
+	       begin                                 
+	         case(state_write)                                 
+	           Idle:                                      
+	             begin                                 
+	               if(S_AXI_ARESETN == 1'b1)                                  
+	                 begin                                 
+	                   axi_awready <= 1'b1;                                 
+	                   axi_wready <= 1'b1;                                 
+	                   state_write <= Waddr;                                 
+	                 end                                 
+	               else state_write <= state_write;                                 
+	             end                                 
+	           Waddr:        //At this state, slave is ready to receive address along with corresponding control signals and first data packet. Response valid is also handled at this state                                 
+	             begin                                 
+	               if (S_AXI_AWVALID && S_AXI_AWREADY)                                 
+	                  begin                                 
+	                    axi_awaddr <= S_AXI_AWADDR;                                 
+	                    if(S_AXI_WVALID)                                  
+	                      begin                                   
+	                        axi_awready <= 1'b1;                                 
+	                        state_write <= Waddr;                                 
+	                        axi_bvalid <= 1'b1;                                 
+	                      end                                 
+	                    else                                  
+	                      begin                                 
+	                        axi_awready <= 1'b0;                                 
+	                        state_write <= Wdata;                                 
+	                        if (S_AXI_BREADY && axi_bvalid) axi_bvalid <= 1'b0;                                 
+	                      end                                 
+	                  end                                 
+	               else                                  
+	                  begin                                 
+	                    state_write <= state_write;                                 
+	                    if (S_AXI_BREADY && axi_bvalid) axi_bvalid <= 1'b0;                                 
+	                   end                                 
+	             end                                 
+	          Wdata:        //At this state, slave is ready to receive the data packets until the number of transfers is equal to burst length                                 
+	             begin                                 
+	               if (S_AXI_WVALID)                                 
+	                 begin                                 
+	                   state_write <= Waddr;                                 
+	                   axi_bvalid <= 1'b1;                                 
+	                   axi_awready <= 1'b1;                                 
+	                 end                                 
+	                else                                  
+	                 begin                                 
+	                   state_write <= state_write;                                 
+	                   if (S_AXI_BREADY && axi_bvalid) axi_bvalid <= 1'b0;                                 
+	                 end                                              
+	             end                                 
+	          endcase                                 
+	        end                                 
+	      end                                 
+
+	// Implement memory mapped register select and write logic generation
+	// The write data is accepted and written to memory mapped registers when
+	// axi_awready, S_AXI_WVALID, axi_wready and S_AXI_WVALID are asserted. Write strobes are used to
+	// select byte enables of slave registers while writing.
+	// These registers are cleared when reset (active low) is applied.
+	// Slave register write enable is asserted when valid address and data are available
+	// and the slave is ready to accept the write address and write data.
+	 
+
+	always @( posedge S_AXI_ACLK )
+	begin
+	  if ( S_AXI_ARESETN == 1'b0 )
+	    begin
+	      // ============================================================
+	      // FIX: slv_reg0/1은 아래 "상태 패킹 always"에서만 구동한다.
+	      //      여기서 reset/write 하면 멀티드라이버(충돌) 생김.
+	      // ============================================================
+	      // slv_reg0 <= 0;  // FIX: 제거
+	      // slv_reg1 <= 0;  // FIX: 제거
+	      slv_reg2 <= 0;
+	      slv_reg3 <= 0;
+	      slv_reg4 <= 0;
+	      slv_reg5 <= 0;
+	      slv_reg6 <= 0;
+	      slv_reg7 <= 0;
+	    end 
+	  else begin
+	    if (S_AXI_WVALID)
+	      begin
+	        case ( (S_AXI_AWVALID) ? S_AXI_AWADDR[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] : axi_awaddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] )
+	          // ============================================================
+	          // FIX: slv_reg0/1은 HW 상태워드(RO)로 쓰므로 AXI write로 쓰지 않음
+	          // ============================================================
+	          // 3'h0: ... slv_reg0 <= S_AXI_WDATA ... (FIX: 제거)
+	          // 3'h1: ... slv_reg1 <= S_AXI_WDATA ... (FIX: 제거)
+
+	          3'h2:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
+	                // Respective byte enables are asserted as per write strobes 
+	                // Slave register 2
+	                slv_reg2[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	              end  
+	          3'h3:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
+	                // Respective byte enables are asserted as per write strobes 
+	                // Slave register 3
+	                slv_reg3[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	              end  
+	          3'h4:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
+	                // Respective byte enables are asserted as per write strobes 
+	                // Slave register 4
+	                slv_reg4[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	              end  
+	          3'h5:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
+	                // Respective byte enables are asserted as per write strobes 
+	                // Slave register 5
+	                slv_reg5[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	              end  
+	          3'h6:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
+	                // Respective byte enables are asserted as per write strobes 
+	                // Slave register 6
+	                slv_reg6[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	              end  
+	          3'h7:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
+	                // Respective byte enables are asserted as per write strobes 
+	                // Slave register 7
+	                slv_reg7[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	              end  
+	          default : begin
+	                      // slv_reg0 <= slv_reg0; // FIX: 제거
+	                      // slv_reg1 <= slv_reg1; // FIX: 제거
+	                      slv_reg2 <= slv_reg2;
+	                      slv_reg3 <= slv_reg3;
+	                      slv_reg4 <= slv_reg4;
+	                      slv_reg5 <= slv_reg5;
+	                      slv_reg6 <= slv_reg6;
+	                      slv_reg7 <= slv_reg7;
+	                    end
+	        endcase
+	      end
+	  end
+	end    
+
+	// Implement read state machine
+	  always @(posedge S_AXI_ACLK)                                       
+	    begin                                       
+	      if (S_AXI_ARESETN == 1'b0)                                       
+	        begin                                       
+	         //asserting initial values to all 0's during reset                                       
+	         axi_arready <= 1'b0;                                       
+	         axi_rvalid <= 1'b0;                                       
+	         axi_rresp <= 1'b0;                                       
+	         state_read <= Idle;                                       
+	        end                                       
+	      else                                       
+	        begin                                       
+	          case(state_read)                                       
+	            Idle:     //Initial state inidicating reset is done and ready to receive read/write transactions                                       
+	              begin                                                
+	                if (S_AXI_ARESETN == 1'b1)                                        
+	                  begin                                       
+	                    state_read <= Raddr;                                       
+	                    axi_arready <= 1'b1;                                       
+	                  end                                       
+	                else state_read <= state_read;                                       
+	              end                                       
+	            Raddr:        //At this state, slave is ready to receive address along with corresponding control signals                                       
+	              begin                                       
+	                if (S_AXI_ARVALID && S_AXI_ARREADY)                                       
+	                  begin                                       
+	                    state_read <= Rdata;                                       
+	                    axi_araddr <= S_AXI_ARADDR;                                       
+	                    axi_rvalid <= 1'b1;                                       
+	                    axi_arready <= 1'b0;                                       
+	                  end                                       
+	                else state_read <= state_read;                                       
+	              end                                       
+	            Rdata:        //At this state, slave is ready to send the data packets until the number of transfers is equal to burst length                                       
+	              begin                                           
+	                if (S_AXI_RVALID && S_AXI_RREADY)                                       
+	                  begin                                       
+	                    axi_rvalid <= 1'b0;                                       
+	                    axi_arready <= 1'b1;                                       
+	                    state_read <= Raddr;                                       
+	                  end                                       
+	                else state_read <= state_read;                                       
+	              end                                       
+	           endcase                                       
+	          end                                       
+	        end                                         
+
+	// Implement memory mapped register select and read logic generation
+//	  assign S_AXI_RDATA = (axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] == 3'h0) ? slv_reg0 : (axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] == 3'h1) ? slv_reg1 : (axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] == 3'h2) ? slv_reg2 : (axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] == 3'h3) ? slv_reg3 : (axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] == 3'h4) ? slv_reg4 : (axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] == 3'h5) ? slv_reg5 : (axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] == 3'h6) ? slv_reg6 : (axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] == 3'h7) ? slv_reg7 : 0; 
+	// Add user logic here
+// 개선된 버전 - clock_gold의 안정성 + timeisgold의 상태 레지스터 기능
+
+// ============================================================
+// AXI-Lite 안전 버전: AW/W 각각 latch 후 commit(1클럭 펄스)
+// ============================================================
+wire aw_hs = (S_AXI_AWVALID && S_AXI_AWREADY);
+wire w_hs  = (S_AXI_WVALID  && S_AXI_WREADY);
+
+reg  [2:0]  wr_addr_lat;
+reg  [31:0] wr_data_lat;
+reg         aw_seen, w_seen;
+reg         wr_commit_pulse;   // 1클럭 동안만 1 (버튼 이벤트 트리거용)
+
+always @(posedge S_AXI_ACLK) begin
+    if(!S_AXI_ARESETN) begin
+        wr_addr_lat <= 3'b000;
+        wr_data_lat <= 32'b0;
+        aw_seen     <= 1'b0;
+        w_seen      <= 1'b0;
+        wr_commit_pulse <= 1'b0;
+    end else begin
+        wr_commit_pulse <= 1'b0; // 기본 0
+
+        // AW 주소 수락 시 주소 래치
+        if(aw_hs) begin
+            wr_addr_lat <= S_AXI_AWADDR[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB];
+            aw_seen <= 1'b1;
+        end
+
+        // W 데이터 수락 시 데이터 래치
+        if(w_hs) begin
+            wr_data_lat <= S_AXI_WDATA;
+            w_seen <= 1'b1;
+        end
+
+        // 둘 다 잡히면 commit 1회 발생
+        if(aw_seen && w_seen) begin
+            wr_commit_pulse <= 1'b1; // ✅ 이 한 클럭이 "write 1건 처리" 신호
+            aw_seen <= 1'b0;
+            w_seen  <= 1'b0;
+        end
+    end
+end
+
+
+// 버튼 펄스 신호 (1클럭 동안만 1)
+reg btn_edit_pedge;
+reg btn_field_pedge;
+reg btn_inc_pedge;
+
+// 버튼 상태 레지스터 (읽기용 - 토글 방식으로 상태 유지)
+reg btn_edit_status;
+reg btn_field_status;
+reg btn_inc_status;
+
+wire  [7:0] hh;
+wire  [7:0] mm;
+wire  [7:0] ss;
+wire        edit_mode;   // 1=수정모드            
+wire  [1:0] field_sel;    // 0=HH, 1=MM, 2=SS  
+
+always @(posedge S_AXI_ACLK) begin
+    if(!S_AXI_ARESETN) begin
+        btn_edit_pedge   <= 1'b0;
+        btn_field_pedge  <= 1'b0;
+        btn_inc_pedge    <= 1'b0;
+        btn_edit_status  <= 1'b0;
+        btn_field_status <= 1'b0;
+        btn_inc_status   <= 1'b0;
+    end
+    else begin
+        // 펄스는 기본적으로 0으로 초기화 (1클럭만 유지)
+        btn_edit_pedge  <= 1'b0;
+        btn_field_pedge <= 1'b0;
+        btn_inc_pedge   <= 1'b0;
+        
+        // ✅ 개선: clock_gold 방식 사용 (더 안정적)
+        // W 핸드셰이크 시점에 래치된 주소 사용
+        // CPU가 해당 주소에 bit0=1을 write하면 버튼 1회 누름으로 인식
+        // 주소 오프셋(레지스터):
+        //  reg3 -> 0x0C, reg4 -> 0x10, reg5 -> 0x14
+        // 변경
+        if (wr_commit_pulse) begin
+            case (wr_addr_lat)
+                3'h3: begin
+                    if (wr_data_lat[0]) begin
+                        btn_edit_pedge  <= 1'b1;
+                        btn_edit_status <= ~btn_edit_status;
+                    end
+                end
+                3'h4: begin
+                    if (wr_data_lat[0]) begin
+                        btn_field_pedge  <= 1'b1;
+                        btn_field_status <= ~btn_field_status;
+                    end
+                end
+                3'h5: begin
+                    if (wr_data_lat[0]) begin
+                        btn_inc_pedge  <= 1'b1;
+                        btn_inc_status <= ~btn_inc_status;
+                    end
+                end
+            endcase
+        end
+    end
+end
+
+clock_time_core u_core(
+    .clk(S_AXI_ACLK),
+    .reset_p(~S_AXI_ARESETN),  // AXI는 Active-Low reset이므로 반전시켜 Active-High로 전달
+    .btn_edit_pedge(btn_edit_pedge),   // 버튼1
+    .btn_field_pedge(btn_field_pedge),  // 버튼2
+    .btn_inc_pedge(btn_inc_pedge),    // 버튼3
+    .btn_dec_pedge(1'b0),   // 사용  X
+    .hh(hh),
+    .mm(mm),
+    .ss(ss),
+    .edit_mode(edit_mode),   // 1=수정모드
+    .field_sel(field_sel)    // 0=HH, 1=MM, 2=SS
+);
+
+// read_mux 재정의 
+// 기본 템플릿은 read하면 slv_reg0~7에 저장된 값만 돌려줌 
+// 하지만 나는 read로 hh/mm/ss/edit_mode/field_sel같은 코어 내부 상태를 보고싶음 
+// 따라서 S_AXI_RDATA를 코어 값으로 직접 MUX
+
+// ============================================================
+// FIX: slv_reg0/slv_reg1에 "0,1번에 나눠서 다 넣기"
+//  - slv_reg0: 시간 hh/mm/ss (각 8비트씩 패킹)
+//  - slv_reg1: 버튼상태 + edit_mode + field_sel (+ 디버깅용 pedge optional)
+// ============================================================
+
+// slv_reg0: 시간 패킹
+always @(posedge S_AXI_ACLK) begin
+    if(!S_AXI_ARESETN) begin
+        slv_reg0 <= 32'b0;
+    end else begin
+        slv_reg0 <= 32'b0;
+        slv_reg0[7:0]   <= hh;
+        slv_reg0[15:8]  <= mm;
+        slv_reg0[23:16] <= ss;
+    end
+end
+
+// slv_reg1: 상태 패킹
+always @(posedge S_AXI_ACLK) begin
+    if(!S_AXI_ARESETN) begin
+        slv_reg1 <= 32'b0;
+    end else begin
+        slv_reg1 <= 32'b0;
+        slv_reg1[0]     <= btn_edit_status;
+        slv_reg1[1]     <= btn_field_status;
+        slv_reg1[2]     <= btn_inc_status;
+        slv_reg1[3]     <= edit_mode;
+        slv_reg1[5:4]   <= field_sel;      // 2비트
+        // 필요하면 pedge도 같이 노출(디버깅용)
+        slv_reg1[8]     <= btn_edit_pedge;
+        slv_reg1[9]     <= btn_field_pedge;
+        slv_reg1[10]    <= btn_inc_pedge;
+    end
+end
+
+// ============================================================
+// Read MUX (Reg0/Reg1만 쓰게 단순화)
+// ============================================================
+wire [2:0] rd_sel = axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB];
+// 읽기 주소에서 레지스터 번호(0~7)만 추출
+
+assign S_AXI_RDATA =
+    (rd_sel == 3'h0) ? slv_reg0 :   // Reg0: hh/mm/ss packed
+    (rd_sel == 3'h1) ? slv_reg1 :   // Reg1: status packed
+    32'b0;
+
+	// User logic ends
+
+	endmodule
+
