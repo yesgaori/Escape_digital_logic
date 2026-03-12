@@ -1,0 +1,72 @@
+
+module buzzer_driver(
+    input clk,            // 100MHz 시스템 클락
+    input reset_p,        // 리셋 신호
+    input [31:0] tone,    // 재생할 음의 주파수 분주값
+    output reg bz_out     // 실제 부저로 나가는 PWM 신호
+);
+    reg [31:0] cnt;
+
+    always @(posedge clk or posedge reset_p) begin
+        if (reset_p) begin
+            cnt <= 0;
+            bz_out <= 0;
+        end else if (tone == 0) begin
+            cnt <= 0;
+            bz_out <= 0; // 무음 처리
+        end else begin
+            if (cnt >= tone) begin
+                cnt <= 0;
+                bz_out <= ~bz_out; // 주파수 주기에 맞춰 반전
+            end else begin
+                cnt <= cnt + 1;
+            end
+        end
+    end
+endmodule
+
+module pwm_Nfreq_Nstep(
+    input clk, reset_p,
+    input [31:0] duty,
+    output reg pwm);
+    
+    parameter SYS_CLK_FREQ = 100_000_000;
+    parameter PWM_FREQ = 10_000;
+    parameter DUTY_STEP = 200;
+    parameter TEMP = SYS_CLK_FREQ / (PWM_FREQ * DUTY_STEP) / 2 - 1;
+    
+    integer cnt;
+    reg pwm_freqXstep;
+    always @(posedge clk, posedge reset_p)begin
+        if(reset_p)begin
+            cnt = 0;
+            pwm_freqXstep = 0;
+        end
+        else begin
+            if(cnt >= TEMP)begin
+                cnt = 0;
+                pwm_freqXstep = ~pwm_freqXstep;
+            end
+            else cnt = cnt + 1;
+        end         
+    end
+    
+    wire pwm_freqXstep_pedge;
+    edge_detector_n ed(.clk(clk), .reset_p(reset_p), .cp(pwm_freqXstep), .p_edge(pwm_freqXstep_pedge));
+    
+    integer cnt_duty;
+    always @(posedge clk, posedge reset_p)begin
+        if(reset_p)begin
+            cnt_duty = 0;
+            pwm = 0;
+        end
+        else if(pwm_freqXstep_pedge)begin
+            if(cnt_duty >= DUTY_STEP -1)cnt_duty = 0;
+            else cnt_duty = cnt_duty + 1;
+            
+            if(cnt_duty < duty)pwm = 1;
+            else pwm = 0;
+        end
+    end
+    
+endmodule

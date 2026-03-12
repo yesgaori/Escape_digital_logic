@@ -1,0 +1,170 @@
+module number4(
+    input clk, reset_p,
+    input [3:0] button,
+    output sg90_pwm,
+    output [7:0] seg,
+    output [3:0] com,
+    output [15:0] led);
+    
+    
+    wire [3:0] btn_pedge, btn_nedge;
+    button_cntr btncntr0(.clk(clk), .reset_p(reset_p), .btn(button[0]), .btn_pedge(btn_pedge[0]), .btn_nedge(btn_nedge[0]));
+    button_cntr btncntr1(.clk(clk), .reset_p(reset_p), .btn(button[1]), .btn_pedge(btn_pedge[1]), .btn_nedge(btn_nedge[1]));
+    button_cntr btncntr2(.clk(clk), .reset_p(reset_p), .btn(button[2]), .btn_pedge(btn_pedge[2]), .btn_nedge(btn_nedge[2]));
+    button_cntr btncntr3(.clk(clk), .reset_p(reset_p), .btn(button[3]), .btn_pedge(btn_pedge[3]), .btn_nedge(btn_nedge[3]));
+    
+    reg [7:0] duty;
+    always @(posedge clk, posedge reset_p)begin
+        if(reset_p)duty = 3;
+        else begin
+            
+            if(btn_pedge[1] && duty > 3)duty = duty -3;
+            
+            if(btn_pedge[2] && duty < 21)duty = duty + 3;        
+        end
+    end
+             
+    pwm_Nfreq_Nstep #(.PWM_FREQ(50), .DUTY_STEP(180)) sg_pwm(.clk(clk), .reset_p(reset_p), .duty(duty), .pwm(sg90_pwm));
+    
+    wire [15:0] bcd_duty;
+    bin_to_dec btd_duty(.bin(35 - ((duty/3)*5)), .bcd(bcd_duty));
+
+    FND_cntr fnd(.clk(clk), .reset_p(reset_p), .fnd_value(bcd_duty[7:0]), .seg(seg), .com(com));
+    
+
+endmodule
+
+module jingle_bells_final_fixed(
+    input clk,            // Basys3 W5 (100MHz)
+    input [0:0] button,   // BTNC (Reset)
+    output [2:0] buz      // [0]:멜로디, [1]:중간화음, [2]:낮은화음
+);
+    parameter CLK_FREQ = 100_000_000;
+    localparam BEAT_UNIT = 32'd30_000_000; 
+    wire reset_p = button[0];
+
+    // --- [음계 상수: 4옥타브 및 5옥타브] ---
+    localparam OFF = 0;
+    // 4옥타브 (화음용)
+    localparam G4=32'd127551, A4=32'd113636, B4=32'd101255, C4=32'd191131, D4=32'd170241, E4=32'd151685, F4=32'd143168;
+    // 5옥타브 (멜로디용 - 시보다 높은 레를 위해 D5 사용)
+    localparam C5=32'd95556, D5=32'd85131, E5=32'd75843, G5=32'd63775;
+
+    reg [31:0] r_m, r_h1, r_h2; // 멜로디, 화음1, 화음2
+    wire [31:0] t_m, t_h1, t_h2;
+    reg [3:0]  duration;
+    reg [31:0] b_cnt;
+    reg [5:0]  n_idx;
+    reg        stop_flag; // 한 번 재생 후 정지하기 위한 플래그
+
+    // 음 분리 로직 (박자의 70%만 소리냄)
+    wire is_play = (b_cnt < (BEAT_UNIT * duration * 7 / 10)) && !stop_flag;
+    assign t_m  = is_play ? r_m  : OFF;
+    assign t_h1 = is_play ? r_h1 : OFF;
+    assign t_h2 = is_play ? r_h2 : OFF;
+
+    // --- [3화음 악보 데이터] ---
+    always @(*) begin
+        r_m = OFF; r_h1 = OFF; r_h2 = OFF; duration = 1;
+        case(n_idx)
+            // 종소리 울려라 (B4 화음)
+            0, 1: begin r_m=B4; r_h1=G4; r_h2=D4; duration=1; end 
+            2:    begin r_m=B4; r_h1=G4; r_h2=D4; duration=2; end 
+            
+            3, 4: begin r_m=B4; r_h1=G4; r_h2=D4; duration=1; end 
+            5:    begin r_m=B4; r_h1=G4; r_h2=D4; duration=2; end 
+
+            // 시(B4) - 레(D5) - 솔(G4) - 라(A4) - 시(B4)
+            6:    begin r_m=B4; r_h1=G4; r_h2=D4; duration=1; end 
+            7:    begin r_m=D5; r_h1=B4; r_h2=G4; duration=1; end // 레(5)로 상승!
+            8:    begin r_m=G4; r_h1=E4; r_h2=C4; duration=1; end 
+            9:    begin r_m=A4; r_h1=F4; r_h2=D4; duration=1; end 
+            10:   begin r_m=B4; r_h1=G4; r_h2=D4; duration=3; end 
+
+            // 도-도-도-도-도 (C5 화음)
+            11,12,13,14,15: begin r_m=C5; r_h1=A4; r_h2=F4; duration=1; end
+
+            // 시-시 (B4 화음)
+            16,17: begin r_m=B4; r_h1=G4; r_h2=D4; duration=1; end
+
+            // 레(D5)-레(D5)-도(C5)-라(A4)-솔(G4)
+            18,19: begin r_m=D5; r_h1=B4; r_h2=G4; duration=1; end
+            20:    begin r_m=C5; r_h1=A4; r_h2=E4; duration=1; end
+            21:    begin r_m=A4; r_h1=F4; r_h2=D4; duration=1; end
+            22:    begin r_m=G4; r_h1=D4; r_h2=B4; duration=6; end // 피날레
+
+            default: begin r_m=OFF; r_h1=OFF; r_h2=OFF; duration=1; end
+        endcase
+    end
+
+    // [제어 로직: 단판 재생 및 카운터]
+    always @(posedge clk or posedge reset_p) begin
+        if (reset_p) begin 
+            b_cnt <= 0; 
+            n_idx <= 0; 
+            stop_flag <= 0; 
+        end 
+        else if (!stop_flag) begin
+            if (b_cnt >= (BEAT_UNIT * duration)) begin
+                b_cnt <= 0;
+                if (n_idx >= 22) stop_flag <= 1; // 마지막 인덱스 도달 시 정지
+                else n_idx <= n_idx + 1;
+            end 
+            else b_cnt <= b_cnt + 1;
+        end
+    end
+
+    // 부저 3개 각각 출력
+    buzzer_driver m_inst (clk, reset_p, t_m,  buz[0]);
+    buzzer_driver h1_inst(clk, reset_p, t_h1, buz[1]);
+    buzzer_driver h2_inst(clk, reset_p, t_h2, buz[2]);
+
+endmodule
+
+module adc_top(
+    input clk,              // 100MHz 시스템 클럭
+    input reset_p,              // 리셋 (버튼 등)
+    input vauxp6,           // JXADC 1번 핀 (Positive)
+    input vauxn6,           // JXADC 1번 핀 (Negative)
+    output reg led_flag     // 조도가 낮을 때 켜지는 플래그 (LED)
+    );
+
+    wire [15:0] adc_data;
+    wire ready;
+    
+    // XADC IP 인스턴스 (IP Catalog에서 'XADC Wizard'로 생성 필요)
+    xadc_wiz_0 your_adc_inst (
+        .daddr_in(8'h16),          // vauxp6/vauxn6 채널 주소 (0x16)
+        .dclk_in(clk),
+        .den_in(ready), 
+        .di_in(16'd0),
+        .dwe_in(1'b0),
+        .drdy_out(ready),
+        .do_out(adc_data),         // 12비트 데이터가 상위 12비트에 담김
+        .vp_in(1'b0),              // 전용 아날로그 핀 미사용 시 0
+        .vn_in(1'b0),
+        .vauxp6(vauxp6),
+        .vauxn6(vauxn6),
+        .channel_out(),
+        .eoc_out(),
+        .alarm_out(),
+        .eos_out(),
+        .busy_out()
+    );
+    
+    // 플래그 로직: ADC 값은 12비트 기준 (0~4095)
+    // 조도센서 특성에 따라 임계값(Threshold)을 조절하세요.
+    always @(posedge clk) begin
+        if (reset_p) begin
+            led_flag <= 1'b0;
+        end else if (ready) begin
+            // 상위 12비트 중 앞 8비트 정도만 비교 (주변 밝기에 따라 8'h80 변경)
+            if (adc_data[15:8] > 8'h80) 
+                led_flag <= 1'b1;  // 어두워지면(혹은 밝아지면) 플래그 ON
+            else
+                led_flag <= 1'b0;
+        end
+    end
+    
+    
+endmodule

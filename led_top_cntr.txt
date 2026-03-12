@@ -1,0 +1,488 @@
+`timescale 1ns / 1ps
+// ============================================================================
+// [초보자용 용어/개념 사전] (Basys3 / Verilog / PWM / 패턴 설계)
+// ----------------------------------------------------------------------------
+// 1) clk (클럭)
+//    - FPGA 내부 로직이 "언제 상태를 갱신할지"를 정하는 기준 신호.
+//    - Basys3의 기본 clk는 100MHz(1초에 1억 번) 이므로,
+//      posedge clk 마다 레지스터(reg)가 한 번씩 업데이트될 수 있음.
+//
+// 2) reset_p (리셋, active-high)
+//    - reset_p=1이면 내부 상태를 초기값으로 강제로 되돌림.
+//    - 코드에서 "posedge reset_p"로 쓰면 비동기(asynchronous) 리셋:
+//      clk와 무관하게 reset_p가 1이 되는 순간 즉시 초기화됨.
+//
+// 3) reg vs wire
+//    - wire: "배선" (조합논리 assign의 결과, 모듈 연결선)
+//    - reg : "상태 저장" (always 블록에서 값이 저장되는 레지스터 변수)
+//      * SystemVerilog에선 logic로 통일하는 경우도 많음.
+//
+// 4) always @(posedge clk ...)
+//    - posedge clk마다 실행되는 순차논리(레지스터) 블록.
+//    - 권장: 순차논리에서는 '<='(nonblocking) 사용.
+//      (이 파일은 일부 '='도 있는데 동작은 가능하나, 스타일상 '<=' 권장)
+//
+// 5) assign
+//    - 조합논리(연결) 문장. 오른쪽 값이 변하면 왼쪽도 즉시 반영.
+//
+// 6) PWM (Pulse Width Modulation)
+//    - 매우 빠르게 ON/OFF를 반복하면서, ON 비율(duty)을 바꿔 "밝기"를 만들기.
+//    - duty가 크면 ON 시간이 길어져 더 밝아 보임.
+//    - 사람 눈은 빠른 깜빡임을 평균으로 느껴서 '밝기'로 인식.
+//
+// 7) duty (듀티)
+//    - PWM 한 주기 안에서 ON인 비율을 나타내는 값.
+//    - 이 프로젝트에서는 DUTY_STEP=200 기준으로 0~200 범위를 사용.
+//
+// 8) phase (패턴 진행도 / 위상)
+//    - 0~199를 반복 증가시키는 카운터.
+//    - 패턴 모듈(rgb_pattern_5)이 phase를 보고 현재 색/밝기를 계산.
+//
+// 9) mode (패턴 번호)
+//    - 어떤 패턴을 실행할지 선택하는 값(0~4).
+//    - 현재 구현: slide[4:0]를 one-hot으로 사용해 mode_sel을 결정.
+//
+// 10) one-hot 스위치 선택
+//    - slide[0]~slide[4] 중 "딱 1개만 1"일 때만 유효.
+//    - 0개 또는 2개 이상 켜졌으면 직전 mode를 유지하도록 설계.
+//
+// ============================================================================
+
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 12/21/2025 02:17:26 PM
+// Design Name: 
+// Module Name: project_codes_1
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+
+
+//////////////////////////////////////////////////////////////////////////////////
+// rgb_pattern_5.v
+// Basys 3 (100 MHz) 기준으로, 3색 LED에 5가지 패턴을 만들기 위한
+// RGB duty 생성기(패턴 생성기) 모듈
+//
+// - 입력: mode(0~4), phase(0~199)
+// - 출력: duty_r/g/b (0~200 권장; 200이면 100% ON이 됨)
+// - PWM 엔진(pwm_Nfreq_Nstep)은 기존 모듈을 그대로 사용
+//////////////////////////////////////////////////////////////////////////////////
+// ============================================================================
+// [모듈] rgb_pattern_5  (패턴 생성기 / "밝기 숫자(duty)"를 만드는 곳)
+// ----------------------------------------------------------------------------
+// 역할(한 줄 요약)
+//   - mode(0~4)와 phase(0~199)를 입력받아 duty_r/g/b(0~200)를 계산.
+//   - 여기서는 PWM 파형을 만들지 않음. "밝기 숫자"만 만든다!
+//     실제 PWM(깜빡임)은 pwm_Nfreq_Nstep_1이 담당.
+//
+// 입력
+//   - mode  : 패턴 번호(0~4)
+//   - phase : 0~199 반복(시간 진행도)
+//   - rand8 : LFSR에서 만든 의사난수(스파클/랜덤 효과에 사용)
+//
+// 출력
+//   - duty_r/g/b : 각 색 채널의 듀티(밝기) 값(0~200 권장)
+//
+// 패턴 구성(현재 5개)
+//   0) Pastel Cycle      : RGB가 0으로 떨어지지 않도록 base를 깔고 부드럽게 순환
+//   1) Random Sparkle    : 배경색 + 가끔(의사난수 조건) 화이트 스파클이 튐
+//   2) Step Fade         : 밝기를 계단식(20단위)으로 올렸다 내림
+//   3) Chase Illusion    : 구간별로 강조색을 바꿔 "지나가는 듯한" 착시 연출
+//   4) Pulse Train       : 연속 맥동(펄스 3개) 반복(색조는 보라/핑크 톤)
+//
+// ============================================================================
+
+module rgb_pattern_5(
+    input      [2:0] mode,     // 0~4
+    input      [7:0] phase,    // 0~199
+    output reg [7:0] duty_r,
+    output reg [7:0] duty_g,
+    output reg [7:0] duty_b
+);
+
+    // pwm_Nfreq_Nstep DUTY_STEP=200 기준
+    localparam [7:0] DUTY_FULL = 8'd200; // 비교식이 "<" 이므로 200이면 100% ON
+
+    // ------------------------------------------------------------
+    // 0..199 -> 삼각파(브리딩)로 변환 (0..198 범위)
+    //   phase < 100 : 2*phase  (0..198)
+    //   else        : 2*(199-phase) (198..0)
+    // ------------------------------------------------------------
+    function [7:0] tri200;
+        input [7:0] p;
+        begin
+            if (p < 8'd100) tri200 = (p << 1);
+            else            tri200 = ((8'd199 - p) << 1);
+        end
+    endfunction
+
+    // ------------------------------------------------------------
+    // phase + offset을 0..199로 wrap (offset을 준 위상 생성용)
+    // ------------------------------------------------------------
+    function [7:0] wrap200;
+        input [8:0] v; // 0..(199+offset)
+        begin
+            if (v >= 9'd200) wrap200 = v - 9'd200;
+            else             wrap200 = v[7:0];
+        end
+    endfunction
+
+    wire [7:0] breath = tri200(phase);
+
+    // Rainbow용 위상 이동(0, +67, +134) — 200 스텝에서 대략 1/3 위상차
+    wire [7:0] p_r = phase;
+    wire [7:0] p_g = wrap200({1'b0, phase} + 9'd67);
+    wire [7:0] p_b = wrap200({1'b0, phase} + 9'd134);
+
+    wire [7:0] rain_r = tri200(p_r);
+    wire [7:0] rain_g = tri200(p_g);
+    wire [7:0] rain_b = tri200(p_b);
+
+    // ------------------------------------------------------------
+    // 5가지 패턴 정의
+    //   0: Red solid
+    //   1: Green solid
+    //   2: Blue solid
+    //   3: White breathing
+    //   4: Rainbow fade
+    // ------------------------------------------------------------
+    always @(*) begin
+        duty_r = 8'd0;
+        duty_g = 8'd0;
+        duty_b = 8'd0;
+
+        case (mode)
+            3'd0: begin
+                duty_r = DUTY_FULL;
+            end
+            3'd1: begin
+                duty_g = DUTY_FULL;
+            end
+            3'd2: begin
+                duty_b = DUTY_FULL;
+            end
+            3'd3: begin
+                duty_r = breath;
+                duty_g = breath;
+                duty_b = breath;
+            end
+            3'd4: begin
+                duty_r = rain_r;
+                duty_g = rain_g;
+                duty_b = rain_b;
+            end
+            default: begin
+                duty_r = 8'd0;
+                duty_g = 8'd0;
+                duty_b = 8'd0;
+            end
+        endcase
+    end
+
+endmodule
+///////////////////////////////////////////////////////
+//module led_pwm_top_1(
+//    input clk, reset_p,
+//    output led_r, led_g, led_b,
+//    output [15:0] led,
+//    output [7:0] seg,
+//    output [3:0] com);
+
+//    integer cnt;
+//    always @(posedge clk)cnt = cnt + 1;
+    
+//    reg [7:0] cnt_200;
+//    reg flag;
+//    always @(posedge clk, posedge reset_p)begin  // (권장 스타일) 순차논리는 '<=' 사용을 권장
+//        if(reset_p)begin
+//            cnt_200 = 0;
+//            flag = 0;
+//        end
+//        else if(cnt[23] && flag == 0)begin
+//            flag = 1;
+//            if(cnt_200 >= 199)cnt_200 = 0;
+//            else cnt_200 = cnt_200 + 1;
+//        end
+//        else if(cnt[23] == 0)flag = 0;
+        
+//    end
+    
+//    pwm_Nfreq_Nstep led_pwm(.clk(clk), .reset_p(reset_p), .duty(cnt_200), .pwm(led[0]));
+    
+//    pwm_Nfreq_Nstep red_pwm(.clk(clk), .reset_p(reset_p), .duty(cnt[27:20]), .pwm(led_r));
+//    pwm_Nfreq_Nstep green_pwm(.clk(clk), .reset_p(reset_p), .duty(cnt[28:21]), .pwm(led_g));
+//    pwm_Nfreq_Nstep blue_pwm(.clk(clk), .reset_p(reset_p), .duty(cnt[29:22]), .pwm(led_b));
+    
+//    wire [15:0] bcd_duty;
+//    bin_to_dec btd_duty(.bin(cnt_200), .bcd(bcd_duty));
+    
+//    FND_cntr fnd(.clk(clk), .reset_p(reset_p),
+//                .fnd_value(bcd_duty), .seg(seg), .com(com)); 
+
+//endmodule
+
+////////////////////////////////////////////
+// ============================================================================
+// [모듈] pwm_Nfreq_Nstep_1  (PWM 엔진: duty -> PWM 파형)
+// ----------------------------------------------------------------------------
+// 역할(한 줄 요약)
+//   - 입력 duty(0~200)를 받아, pwm 출력이 그 비율만큼 1이 되도록 만듦.
+//
+// 핵심 파라미터
+//   - SYS_CLK_FREQ = 100_000_000  (Basys3 100MHz)
+//   - PWM_FREQ     = 10_000       (PWM 기본 주파수 10kHz)
+//   - DUTY_STEP    = 200          (듀티 단계 수: 0~199 또는 0~200 범위 활용)
+//
+// 내부 원리(2단 구조라 초보자가 헷갈리는 부분)
+//   (1) cnt로 "pwm_freqXstep"라는 내부 토글 신호를 만든다.
+//       - 이 토글은 (PWM_FREQ * DUTY_STEP)에 맞춰 매우 빠르게 토글되며,
+//         결과적으로 "듀티 카운터를 한 스텝 증가시킬 타이밍"을 만든다.
+//   (2) edge_detector로 pwm_freqXstep의 상승엣지를 검출하면,
+//       그때마다 cnt_duty를 0..DUTY_STEP-1로 증가시킨다.
+//   (3) cnt_duty < duty 이면 pwm=1, 아니면 pwm=0
+//       -> duty가 클수록 1인 구간이 길어져 밝게 보임.
+//
+// ============================================================================
+
+module pwm_Nfreq_Nstep_1(
+    input clk, reset_p,
+    input [31:0] duty,
+    output reg pwm);
+
+    parameter SYS_CLK_FREQ = 100_000_000;
+    parameter PWM_FREQ = 10_000;
+    parameter DUTY_STEP = 200;
+    parameter temp = SYS_CLK_FREQ / (PWM_FREQ * DUTY_STEP) / 2 - 1;
+    
+    integer cnt;
+    reg pwm_freqXstep;
+    always @(posedge clk, posedge reset_p)begin
+        if(reset_p)begin
+            cnt = 0;
+            pwm_freqXstep = 0;
+        end
+        else begin
+            if(cnt >= temp)begin
+                cnt = 0;
+                pwm_freqXstep = ~pwm_freqXstep;
+            end
+            else cnt = cnt + 1;
+        end
+    end
+    wire pwm_freqXstep_pedge;
+    
+    edge_detector_n ed(.clk(clk), 
+                       .reset_p(reset_p),
+                       .cp(pwm_freqXstep), 
+                       .p_edge(pwm_freqXstep_pedge));
+                       
+    integer cnt_duty;
+    always @(posedge clk, posedge reset_p)begin
+        if(reset_p)begin
+            cnt_duty = 0;
+            pwm = 0;
+        end
+        else if(pwm_freqXstep_pedge)begin
+            if(cnt_duty >= DUTY_STEP-1)cnt_duty = 0;
+            else cnt_duty = cnt_duty + 1;
+            
+            if(cnt_duty < duty)pwm = 1;
+            else pwm = 0;
+        end
+    end
+endmodule
+///////////////////////////////////////////////////////////////////////
+// ============================================================================
+// [모듈] edge_detector_n_1  (엣지 검출기)
+// ----------------------------------------------------------------------------
+// 역할
+//   - 입력 cp의 변화를 감시해서
+//     0->1이면 p_edge(상승엣지), 1->0이면 n_edge(하강엣지)를 1클럭 폭으로 출력.
+//
+// 왜 negedge clk에서 샘플링하나?
+//   - 많은 로직이 posedge clk에서 상태가 바뀌므로,
+//     negedge에서 cp를 샘플링하면 "레이스(동시에 바뀌는 문제)"를 줄이고
+//     엣지 펄스가 더 안정적으로 나오는 경우가 많다.
+//   - 즉, posedge 로직과 샘플 타이밍을 반 클럭 어긋나게 해서 안전하게 만드는 기법.
+//
+// 내부 원리
+//   - ff_old <= ff_cur, ff_cur <= cp 로 이전/현재 값을 저장
+//   - {ff_cur, ff_old}가 2'b10이면 상승, 2'b01이면 하강
+//
+// ============================================================================
+
+module edge_detector_n_1(
+    input clk, reset_p,
+    input cp,                  // 검사할 신호(현재 입력)
+    output p_edge, n_edge);    // p_edge : 상승엣지(0->1) 검출, n_edge : 하강엣지(1->0) 검출
+
+    reg ff_cur, ff_old;        // 현재 샘플/이전 샘플 저장용 -> ff_cur : 이번 샘플에서 읽은 cp, ff_old : 직전 샘플의 ff_cur(=이전 cp)
+    
+    // 샘플링 레지스터(동작 기준: negedge clk)
+    
+    always @(negedge clk, posedge reset_p)begin
+        if(reset_p)begin
+            ff_cur = 0;
+            ff_old = 0;
+        end
+        else begin
+            ff_old = ff_cur;          // 이전 <= 현재(직전값 저장)
+            ff_cur = cp;              // 현재 <= cp 샘플(이번값 저장)
+        end
+    end
+    
+    // `reset_p=1`이면 비동기 즉시 초기화(`ff_cur=0`, `ff_old=0`)
+    //- reset이 아니면 **negedge clk마다**
+    //    1. `ff_old`에 이전 `ff_cur` 저장
+    //    2. `ff_cur`에 현재 `cp`를 저장
+    //- 이 구조로 “이전/현재” 비교가 가능
+    
+    //////////////////////////////////////
+    
+    // 조합논리로 엣지 판정
+    
+    assign p_edge = ({ff_cur, ff_old} == 2'b10) ? 1 : 0;
+    assign n_edge = ({ff_cur, ff_old} == 2'b01) ? 1 : 0;
+
+    //- `{ff_cur, ff_old}`가
+    //- `10`이면: 이전=0, 현재=1 ⇒ **0→1 상승엣지**
+    //- `01`이면: 이전=1, 현재=0 ⇒ **1→0 하강엣지**
+    //- 출력은 `ff_cur/ff_old`가 다음 negedge에서 갱신되기 전까지 유지되므로, 결과적으로 **“negedge 기준 1클럭 폭 펄스”**처럼 사용됨
+
+endmodule
+///////////////////////////////////////////////////////////////////////
+// ============================================================================
+// [모듈] seg_decoder_1  (7세그먼트 디코더)
+// ----------------------------------------------------------------------------
+// 역할
+//   - 4비트 값(hex_value: 0~15)을 입력받아
+//     7세그먼트의 a~g, dp를 어떤 패턴으로 켤지(seg[7:0])로 변환.
+//
+// Basys3 7세그는 보통 공통 애노드(또는 보드 설계에 따른 active-low)라서
+// '1이 꺼짐, 0이 켜짐' 형태의 비트 패턴을 쓰는 경우가 많다.
+// (이 코드도 0이 켜지는 패턴을 사용)
+//
+// 비트 순서 주의
+//   // pgfe_dcba  (dp, g, f, e, d, c, b, a)
+// ============================================================================
+
+module seg_decoder_1(
+    input [3:0] hex_value,
+    output reg [7:0] seg);
+    always @(hex_value)begin
+        case(hex_value)
+            //             pgfe_dcba
+            4'd0: seg = 8'b1100_0000;   // 0
+            4'd1: seg = 8'b1111_1001;   // 1
+            4'd2: seg = 8'b1010_0100;   // 2
+            4'd3: seg = 8'b1011_0000;   // 3
+            4'd4: seg = 8'b1001_1001;   // 4
+            4'd5: seg = 8'b1001_0010;   // 5
+            4'd6: seg = 8'b1000_0010;   // 6
+            4'd7: seg = 8'b1111_1000;   // 7
+            4'd8: seg = 8'b1000_0000;   // 8
+            4'd9: seg = 8'b1001_0000;   // 9
+            4'd10: seg = 8'b1000_1000;   // A
+            4'd11: seg = 8'b1000_0011;   // b
+            4'd12: seg = 8'b1100_0110;   // C
+            4'd13: seg = 8'b1010_0001;   // d
+            4'd14: seg = 8'b1000_0110;   // E
+            4'd15: seg = 8'b1000_1110;   // F
+        endcase
+    end
+endmodule
+
+///////////////////////////////////////////////////////////////
+// ============================================================================
+// [모듈] bin_to_dec_1  (이진수 -> BCD 변환: Double Dabble)
+// ----------------------------------------------------------------------------
+// 역할
+//   - 12비트 이진수(bin, 0~4095)를 4자리 BCD(각 4비트)로 변환.
+//   - FND에 숫자를 띄우려면 "각 자리"가 필요하므로 BCD가 편리.
+//
+// 알고리즘(Double Dabble, Shift-Add-3)
+//   - 이진수를 MSB부터 한 비트씩 BCD로 쉬프트해 넣는다.
+//   - 쉬프트하기 전에 각 BCD 자리(4비트)가 5 이상이면 +3을 해주면
+//     십진수 자리 올림 규칙이 유지된다.
+//
+// ============================================================================
+
+module bin_to_dec_1(
+    input [11:0] bin,
+    output reg [15:0] bcd);
+    integer i;
+    always @(bin)begin
+        bcd = 0;
+        for(i=0;i<12;i=i+1)begin
+            if(bcd[3:0] >= 5) bcd[3:0] = bcd[3:0] + 3;
+            if(bcd[7:4] >= 5) bcd[7:4] = bcd[7:4] + 3;
+            if(bcd[11:8] >= 5) bcd[11:8] = bcd[11:8] + 3;
+            if(bcd[15:12] >= 5) bcd[15:12] = bcd[15:12] + 3;
+            bcd = {bcd[14:0], bin[11-i]};
+        end
+    end
+endmodule
+////////////////////////////////////////////////////////////////
+// ============================================================================
+// [모듈] FND_cntr_1  (4자리 7세그 멀티플렉싱 컨트롤러)
+// ----------------------------------------------------------------------------
+// 왜 멀티플렉싱이 필요한가?
+//   - Basys3의 4자리 7세그는 seg 선(a~g,dp)을 4자리가 공유하고,
+//     com(anode/cathode 선택)으로 "지금 몇 번째 자리만 켤지"를 선택한다.
+//   - 그래서 매우 빠르게 (1자리 켬 -> 다음 자리 켬 -> ...) 반복하면
+//     사람 눈에는 4자리 모두 동시에 켜진 것처럼 보인다.
+//
+// 동작 원리
+//   (1) clk_div 카운터로 느린 스캔 클럭을 만들고
+//   (2) com을 1110 -> 1101 -> 1011 -> 0111 순으로 회전
+//   (3) com 값에 따라 fnd_value의 해당 4비트를 digit_value로 선택
+//   (4) seg_decoder_1로 digit_value를 seg 패턴으로 변환
+//
+// ============================================================================
+
+module FND_cntr_1(
+    input clk, reset_p,
+    input [15:0] fnd_value,
+    output [7:0] seg,
+    output reg [3:0] com);
+    
+    reg [16:0] clk_div;
+    always @(posedge clk)clk_div = clk_div + 1;
+    
+    wire clk_div_ed;
+    edge_detector_n ed_com(.clk(clk), .reset_p(reset_p),
+                    .cp(clk_div[16]), .p_edge(clk_div_ed));
+    
+    always @(posedge clk or posedge reset_p)begin
+        if(reset_p)com = 4'b1110;
+        else if(clk_div_ed)begin
+            if(com[0] + com[1] + com[2] + com[3] != 3) com = 4'b1110;
+            else com = {com[2:0], com[3]};
+        end
+    end
+    reg [3:0] digit_value;
+    always @(posedge clk, posedge reset_p)begin
+        if(reset_p)digit_value = 0;
+        else begin
+            case(com)
+                4'b1110: digit_value = fnd_value[3:0];
+                4'b1101: digit_value = fnd_value[7:4];
+                4'b1011: digit_value = fnd_value[11:8];
+                4'b0111: digit_value = fnd_value[15:12];
+            endcase
+        end
+    end
+    seg_decoder dec(.hex_value(digit_value), .seg(seg));
+    
+endmodule
